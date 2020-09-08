@@ -1,0 +1,219 @@
+name: landingzones
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'documentation/**'
+      - '_pictures/**'
+      - 'README.md'
+      - 'CHANGELOG.md'
+
+env:
+  TF_CLI_ARGS: '-no-color'
+  TF_CLI_ARGS_destroy: '-auto-approve -refresh=false'
+  ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+  ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+  TFVARS_PATH: '/tf/caf/caf-landingzone-example'
+  TF_VAR_workspace: 'sandpit'
+
+jobs:
+  tfsec:
+    name: Run TFsec
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - name: Terraform security scan
+        uses: triat/terraform-security-scan@v1.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  level0:
+    name: level0
+    runs-on: ubuntu-latest
+
+    container:
+      image: aztfmod/rover:2009.0210
+      options: --user 0
+
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Login azure
+        run: |
+          az login --service-principal -u '${{ env.ARM_CLIENT_ID }}' -p '${{ env.ARM_CLIENT_SECRET }}' --tenant '${{ env.ARM_TENANT_ID }}'
+          az account set -s  ${{ env.ARM_SUBSCRIPTION_ID }}
+
+          echo "local user: $(whoami)"
+      
+      - name: Locate launchpad
+        run: |
+          ln -s ${GITHUB_WORKSPACE} /tf/caf
+
+          id=$(az storage account list --query "[?tags.tfstate=='level0' && tags.environment=='${{ github.run_id }}']" -o json | jq -r .[0].id)
+
+          if [ "${id}" == "null" ]; then
+            /tf/rover/rover.sh -lz /tf/caf/caf-landingzone-example/landingzones/launchpad -a apply \
+              -launchpad \
+              --environment ${{ env.TF_VAR_workspace }} \
+              '-var-file ${{ env.TFVARS_PATH }}/tfvars/${{ env.TF_VAR_workspace }}/launchpad_opensource_light.tfvars'
+          fi
+
+  level1:
+    name: level1
+    runs-on: ubuntu-latest
+    
+    needs: level0
+
+    container:
+      image: aztfmod/rover:2009.0210
+      options: --user 0
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name:  setup context
+        id: context
+        run: |
+          ln -s ${GITHUB_WORKSPACE} /tf/caf
+          echo "ls /tf/caf" && ls -lsa /tf/caf
+          ls -lsa /tmp
+
+          # workspace='caffoundationsci'
+          # echo ::set-env name=TF_VAR_workspace::${workspace}
+
+      - name: Login azure
+        run: |
+          az login --service-principal -u '${{ env.ARM_CLIENT_ID }}' -p '${{ env.ARM_CLIENT_SECRET }}' --tenant '${{ env.ARM_TENANT_ID }}'
+          az account set -s  ${{ env.ARM_SUBSCRIPTION_ID }}
+
+          echo "local user: $(whoami)"
+            
+      - name: Install level 1
+        run: |
+            /tf/rover/rover.sh -lz /tf/caf/caf-landingzone-example/landingzones/landingzone_contoso_level_1 -a apply \
+              --environment ${{ env.TF_VAR_workspace }} \
+              '-var-file ${{ env.TFVARS_PATH }}/tfvars/${{ env.TF_VAR_workspace }}/landingzone_contoso_level_1.auto.tfvars' 
+                
+  level2:
+    name: level2
+    runs-on: ubuntu-latest
+    
+    needs: [level0, level1]
+    
+    container:
+      image: aztfmod/rover:2009.0210
+      options: --user 0
+    
+    steps:
+      - uses: actions/checkout@v2
+
+      - name:  setup context
+        id: context
+        run: |
+          ln -s ${GITHUB_WORKSPACE} /tf/caf
+          echo "ls /tf/caf" && ls -lsa /tf/caf
+          ls -lsa /tmp
+
+      - name: Login azure
+        run: |
+          az login --service-principal -u '${{ env.ARM_CLIENT_ID }}' -p '${{ env.ARM_CLIENT_SECRET }}' --tenant '${{ env.ARM_TENANT_ID }}'
+          az account set -s  ${{ env.ARM_SUBSCRIPTION_ID }}
+
+          echo "local user: $(whoami)"
+            
+      - name: Deploy landing_zone
+        run: |
+            /tf/rover/rover.sh -lz /tf/caf/caf-landingzone-example/landingzones/landingzone_contoso_level_2 -a apply \
+              --environment ${{ env.TF_VAR_workspace }}
+
+      - name: Destroy landing_zone
+        if: always()
+        run: |
+          /tf/rover/rover.sh -lz /tf/caf/caf-landingzone-example/landingzones/landingzone_contoso_level_2 -a destroy \
+            --environment ${{ env.TF_VAR_workspace }} \
+            '-auto-approve'
+      
+          
+  level1_destroy:
+    name: level1_destroy
+    runs-on: ubuntu-latest
+    if: always() 
+    needs: level2
+
+    container:
+      image: aztfmod/rover:2009.0210
+      options: --user 0
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name:  setup context
+        id: context
+        run: |
+          ln -s ${GITHUB_WORKSPACE} /tf/caf
+          echo "ls /tf/caf" && ls -lsa /tf/caf
+          ls -lsa /tmp
+
+          # workspace='caffoundationsci'
+          # echo ::set-env name=TF_VAR_workspace::${workspace}
+
+      - name: Login azure
+        run: |
+          az login --service-principal -u '${{ env.ARM_CLIENT_ID }}' -p '${{ env.ARM_CLIENT_SECRET }}' --tenant '${{ env.ARM_TENANT_ID }}'
+          az account set -s  ${{ env.ARM_SUBSCRIPTION_ID }}
+
+          echo "local user: $(whoami)"
+            
+      - name: destroy level1
+        run: |
+            /tf/rover/rover.sh -lz /tf/caf/caf-landingzone-example/landingzones/landingzone_contoso_level_1 -a destroy \
+              --environment ${{ env.TF_VAR_workspace }} \
+              '-var-file ${{ env.TFVARS_PATH }}/tfvars/${{ env.TF_VAR_workspace }}/landingzone_contoso_level_1.auto.tfvars' \
+              '-auto-approve'
+
+  level0_destroy:
+    name: level0_destroy
+    runs-on: ubuntu-latest
+    if: always()
+    needs: level1_destroy
+
+    container:
+      image: aztfmod/rover:2009.0210
+      options: --user 0
+
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Login azure
+        run: |
+          az login --service-principal -u '${{ env.ARM_CLIENT_ID }}' -p '${{ env.ARM_CLIENT_SECRET }}' --tenant '${{ env.ARM_TENANT_ID }}'
+          az account set -s  ${{ env.ARM_SUBSCRIPTION_ID }}
+
+          echo "local user: $(whoami)"
+      
+      - name: Remove launchpad
+        run: |
+          ln -s ${GITHUB_WORKSPACE} /tf/caf
+
+          /tf/rover/rover.sh -lz /tf/caf/caf-landingzone-example/landingzones/launchpad -a destroy \
+            -launchpad \
+            --environment ${{ env.TF_VAR_workspace }} \
+            '-var-file ${{ env.TFVARS_PATH }}/tfvars/${{ env.TF_VAR_workspace }}/launchpad_opensource_light.tfvars'
+          
+      - name: Complete purge
+        if: ${{ always() }}
+        run: |
+          for i in `az monitor log-profiles list -o tsv --query '[].name'`; do az monitor log-profiles delete --name $i; done
+          for i in `az ad group list --query "[?contains(displayName, '${{ github.run_id }}')].objectId" -o tsv`; do echo "purging Azure AD group: $i" && $(az ad group delete --verbose --group $i || true); done
+          for i in `az ad app list --query "[?contains(displayName, '${{ github.run_id }}')].appId" -o tsv`; do echo "purging Azure AD app: $i" && $(az ad app delete --verbose --id $i || true); done
+          for i in `az group list --query "[?tags.testing_job_id=='${{ github.run_id }}'].name" -o tsv`; do echo "purging resource group: $i" && $(az group delete -n $i -y --no-wait || true); done
+          for i in `az role assignment list --query "[?contains(roleDefinitionName, '${{ github.run_id }}')].roleDefinitionName" -o tsv`; do echo "purging role assignment: $i" && $(az role assignment delete --role $i || true); done
+          for i in `az role definition list --query "[?contains(roleName, '${{ github.run_id }}')].roleName" -o tsv`; do echo "purging custom role definition: $i" && $(az role definition delete --name $i || true); done
